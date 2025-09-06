@@ -3,7 +3,8 @@ import torch.nn as nn
 
 from Models.layers.modules import conv_block, UpCat, UpCatconv, UnetDsv3, UnetGridGatingSignal3,UpCat2
 from Models.layers.scale_attention_layer import scale_atten_convblock
-
+from Models.modules.ftransformer import GeneralTransformerBlock
+from Models.networks.sat_tex import KSCO_2,KSCO_1
 import torch.nn.functional as F
 
 # ===== Double Convolution Block =====
@@ -25,13 +26,10 @@ class double_conv(nn.Module):
     def forward(self, x):
         x = self.conv(x)
         return x
-    
-# ===== Up-sampling Block =====
-# Có 2 lựa chọn: Upsample (bilinear) hoặc ConvTranspose2d
-# Sau đó đi qua double_conv để tái hợp đặc trưng
-class up(nn.Module):
+        
+class Up(nn.Module):
     def __init__(self, in_ch, out_ch, bilinear=False):
-        super(up, self).__init__()
+        super(Up, self).__init__()
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         else:
@@ -40,16 +38,9 @@ class up(nn.Module):
         self.conv = double_conv(in_ch, out_ch)
 
     def forward(self, x1):
-        #x1 = self.up(x1)
-        #diffX = x1.size()[2] - x2.size()[2]
-        #diffY = x1.size()[3] - x2.size()[3]
-        #x2 = F.pad(x2, (diffX // 2, int(diffX / 2), diffY // 2, int(diffY / 2)))
         x = x1
         x = self.conv(x)
         return x
-
-from Models.modules.ftransformer import GeneralTransformerBlock
-from Models.networks.sat_tex import KSCO_2,KSCO_1
 
 
 class skinformer(nn.Module):
@@ -99,10 +90,10 @@ class skinformer(nn.Module):
         self.up_concat2 = UpCat(filters[2], filters[1], self.is_deconv)
         self.up_concat1 = UpCat(filters[1], filters[0], self.is_deconv)
 
-        self.up4 = up(filters[4], filters[3])
-        self.up3 = up(filters[3], filters[2])
-        self.up2 = up(filters[2], filters[1])
-        self.up1 = up(filters[1], filters[0])
+        self.up4_layer = Up(filters[3], filters[3])
+        self.up3_layer = Up(filters[2], filters[2])
+        self.up2_layer = Up(filters[1], filters[1])
+        self.up1_layer = Up(filters[0], filters[0])
 
         # deep supervision
         self.dsv4 = UnetDsv3(in_size=filters[3], out_size=4, scale_factor=self.out_size)
@@ -139,121 +130,116 @@ class skinformer(nn.Module):
         # Encoder
         # ================================
         conv1 = self.conv1(inputs)              
-        # 256x256 -> [B, 16, 256, 256]
+        # 256x256 -> torch.Size([16, 16, 256, 256])
         # 512x512 -> [B, 16, 512, 512]
         maxpool1 = self.maxpool1(conv1)         
-        # 256x256 -> [B, 16, 128, 128]
+        # 256x256 -> torch.Size([16, 16, 128, 128])
         # 512x512 -> [B, 16, 256, 256]
 
         conv2 = self.conv2(maxpool1)            
-        # 256x256 -> [B, 32, 128, 128]
+        # 256x256 -> torch.Size([16, 32, 128, 128])
         # 512x512 -> [B, 32, 256, 256]
         maxpool2 = self.maxpool2(conv2)         
-        # 256x256 -> [B, 32, 64, 64]
+        # 256x256 -> torch.Size([16, 32, 64, 64])
         # 512x512 -> [B, 32, 128, 128]
 
         conv3 = self.conv3(maxpool2)            
-        # 256x256 -> [B, 64, 64, 64]
+        # 256x256 -> torch.Size([16, 64, 64, 64])
         # 512x512 -> [B, 64, 128, 128]
         maxpool3 = self.maxpool3(conv3)         
-        # 256x256 -> [B, 64, 32, 32]
+        # 256x256 -> torch.Size([16, 64, 32, 32])
         # 512x512 -> [B, 64, 64, 64]
 
         conv4 = self.conv4(maxpool3)            
-        # 256x256 -> [B, 128, 32, 32]
+        # 256x256 -> torch.Size([16, 128, 32, 32])
         # 512x512 -> [B, 128, 64, 64]
         maxpool4 = self.maxpool4(conv4)         
-        # 256x256 -> [B, 128, 16, 16]
+        # 256x256 -> torch.Size([16, 128, 16, 16])
         # 512x512 -> [B, 128, 32, 32]
 
         center = self.center(maxpool4)          
-        # 256x256 -> [B, 256, 16, 16]
+        # 256x256 -> torch.Size([16, 256, 16, 16])
         # 512x512 -> [B, 256, 32, 32]
 
         # ================================
         # QCO modules
         # ================================
-        sta, quant = self.qco(center)           
-        # 256x256 -> [B, 256, 16, 16]
-        # 512x512 -> [B, 256, 32, 32]
+        sta, quant = self.qco(center)
+        sta = sta.view(-1, 256, 16, 16) 
+            
+        # sta shape:  torch.Size([16, 256, 256])
+        # quant shape:  torch.Size([16, 256, 256])
+        # sta after shape:  torch.Size([16, 256, 16, 16])
 
         quant3 = self.qco3(maxpool3)            
-        # 256x256 -> [B, 64, 32, 32]
-        # 512x512 -> [B, 64, 64, 64]
-
         quant2 = self.qco2(maxpool2)            
-        # 256x256 -> [B, 64, 64, 64]
-        # 512x512 -> [B, 64, 128, 128]
-        quant2 = self.down2(quant2)             
-        # 256x256 -> [B, 64, 32, 32]
-        # 512x512 -> [B, 64, 64, 64]
-
         quant1 = self.qco1(maxpool1)            
-        # 256x256 -> [B, 64, 128, 128]
-        # 512x512 -> [B, 64, 256, 256]
-        quant1 = self.down4(quant1)             
-        # 256x256 -> [B, 64, 32, 32]
-        # 512x512 -> [B, 64, 64, 64]
+        # quant3 shape:  torch.Size([16, 1024, 64])
+        # quant2 shape:  torch.Size([16, 4096, 64])
+        # quant1 shape:  torch.Size([16, 16384, 64])
 
-        kv = self.heatmap2(torch.cat((quant3, quant2, quant1), dim=1))  
-        # 256x256 -> [B, 256, 32, 32]
-        # 512x512 -> [B, 256, 64, 64]
+        quant3 = quant3.view(-1, 64, 32, 32)
+        quant2 = quant2.view(-1, 64, 64, 64)
+        quant1 = quant1.view(-1, 64, 128, 128)
+        # quant3 after shape:  torch.Size([16, 64, 32, 32])
+        # quant2 after shape:  torch.Size([16, 64, 64, 64])
+        # quant1 after shape:  torch.Size([16, 64, 128, 128])
+        
+        quant2 = self.down2(quant2)
+        quant1 = self.down4(quant1)
+        # quant2 shape:  torch.Size([16, 64, 32, 32])
+        # quant1 shape:  torch.Size([16, 64, 32, 32])
+
+        kv = self.heatmap2(torch.cat((quant3, quant2, quant1), dim=1))
+        #kv shape:  torch.Size([16, 256, 32, 32])
+
+        quant = quant.view(-1, 256, 16, 16)
+        # quant after shape:  torch.Size([16, 256, 16, 16])
 
         q = self.up(quant)                      
-        # 256x256 -> [B, 256, 32, 32]
-        # 512x512 -> [B, 256, 64, 64]
+        #q shape:  torch.Size([16, 256, 32, 32])
+
 
         # ================================
         # Transformer Fusion
         # ================================
-        y = self.transformer(q, kv)             
-        # 256x256 -> [B, 256, 32, 32]
-        # 512x512 -> [B, 256, 64, 64]
+        y = self.transformer(q, kv)    
+        #y shape:  torch.Size([16, 256, 32, 32])        
+
 
         # ================================
         # Decoder
         # ================================
-        up4 = self.up_concat4(conv4, sta)       
-        g_conv4 = self.up4(up4)                 
-        # 256x256 -> [B, 128, 32, 32]
-        # 512x512 -> [B, 128, 64, 64]
+        up4_input = self.up_concat4(conv4, sta)   # concat skip connection
+        up4_output = self.up4_layer(up4_input)        # upsample + double conv
+        
+        up3_input = self.up_concat3(conv3, up4_output)   # concat skip connection
+        up3_output = self.up3_layer(up3_input)        # upsample + double conv
 
-        up3 = self.up_concat3(conv3, g_conv4)   
-        up3 = self.up3(up3)                     
-        # 256x256 -> [B, 64, 64, 64]
-        # 512x512 -> [B, 64, 128, 128]
+        up2_input = self.up_concat2(conv2, up3_output)   # concat skip connection
+        up2_output = self.up2_layer(up2_input)        # upsample + double conv
 
-        up2 = self.up_concat2(conv2, up3)       
-        up2 = self.up2(up2)                     
-        # 256x256 -> [B, 32, 128, 128]
-        # 512x512 -> [B, 32, 256, 256]
 
-        up1 = self.up_concat1(conv1, up2)       
-        up1 = self.up1(up1)                     
-        # 256x256 -> [B, 16, 256, 256]
-        # 512x512 -> [B, 16, 512, 512]
+        up1_input = self.up_concat1(conv1, up2_output)   # concat skip connection
+        up1_output = self.up1_layer(up1_input)        # upsample + double conv
+
 
         # ================================
         # Fusion với ST features
         # ================================
         ST = self.heatmap3(y)                   
-        # 256x256 -> [B, 16, 32, 32]
-        # 512x512 -> [B, 16, 64, 64]
-        ST = F.interpolate(ST, size=inputs.shape[2:], mode="bilinear", align_corners=True)  
-        # 256x256 -> [B, 16, 256, 256]
-        # 512x512 -> [B, 16, 512, 512]
-        up1 = torch.cat((ST, up1), dim=1)       
-        # 256x256 -> [B, 32, 256, 256]
-        # 512x512 -> [B, 32, 512, 512]
+        # ST shape:  torch.Size([16, 16, 32, 32])
+        ST = F.interpolate(ST, size=(256, 256), mode='bilinear', align_corners=True)
+        # ST after shape:  torch.Size([16, 16, 256, 256])
+        up1 = torch.cat((ST, up1_output), dim=1)       
+        # up1 shape:  torch.Size([16, 32, 256, 256])
 
         # ================================
         # Deep Supervision + Output
         # ================================
         dsv1 = self.dsv1(up1)                   
-        # 256x256 -> [B, 4, 256, 256]
-        # 512x512 -> [B, 4, 512, 512]
+        # 256x256 -> torch.Size([16, 4, 256, 256])
         out = self.final(dsv1)                  
-        # 256x256 -> [B, n_classes, 256, 256]
-        # 512x512 -> [B, n_classes, 512, 512]
+        # 256x256 -> torch.Size([16, 2, 256, 256])
 
         return out
