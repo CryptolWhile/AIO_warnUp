@@ -33,7 +33,7 @@ class Up(nn.Module):
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         else:
-            self.up = nn.ConvTranspose2d(in_ch // 2, in_ch // 2, 2, stride=2)
+            self.up = nn.ConvTranspose2d(in_ch , in_ch , 2, stride=2)
 
         self.conv = double_conv(in_ch, out_ch)
 
@@ -243,3 +243,4 @@ class skinformer(nn.Module):
         # 256x256 -> torch.Size([16, 2, 256, 256])
 
         return out
+
