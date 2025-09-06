@@ -341,6 +341,7 @@ class MultiheadAttention(Module):
         else:
             return attn_output
 
+
 class MultiheadAttention2(Module):
     bias_k: Optional[torch.Tensor]
     bias_v: Optional[torch.Tensor]
