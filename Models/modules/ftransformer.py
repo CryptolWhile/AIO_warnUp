@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 from functools import partial
-
+import torch.nn.functional as F
 from .multihead_isa_pool_attention import InterlacedPoolAttention2 as InterlacedPoolAttention
 from .ffn_block import MlpDWBN,MlpLight,Mlp
 
@@ -112,18 +112,20 @@ class GeneralTransformerBlock(nn.Module):
                      padding=1, bias=False)
         self.aspp = ASPP()
     def forward(self, x,y, mask=None):
-        B, C, H, W = x.size()
+        B, C, H, W = x.size() # B, 256, 32, 32
         # reshape
-        x = x.view(B, C, -1).permute(0, 2, 1)
-        y = y.view(B, C, -1).permute(0, 2, 1)
+        x = x.view(B, C, -1).permute(0, 2, 1)#  [B, H*W, C] = [B, 1024, 256]
+        y = y.view(B, C, -1).permute(0, 2, 1) # [B, 1024, 256]
         # Attention
         x = x + self.drop_path(self.attn(self.norm1(x),self.norm1(y), H, W))
         #print(x.shape)torch.Size([16, 1024, 256])
+        #[B, 1024, 256]
         B, N, C = x.shape
         if N == (H * W + 1):
             x_ = x[:, 1:, :].permute(0, 2, 1).reshape(B, C, H, W)
         else:
             x_ = x.permute(0, 2, 1).reshape(B, C, H, W)
+            # [B, 256, 32, 32]
         #print(x_.shape)16, 256, 32, 32]
 
         # level_0 = self.weight_level_1(x_)
@@ -132,14 +134,18 @@ class GeneralTransformerBlock(nn.Module):
         # print(level_0.shape)
         # print(level_1.shape)
         # print(level_2.shape)
-        levels_weight = self.aspp(x_)
+        levels_weight = self.aspp(x_)  # [B, 256, 32, 32]
         levels_weight = levels_weight.view(B, C, -1).permute(0, 2, 1)
+        # [B, 1024, 256]
 
         # FFN
         x = x + self.drop_path(self.mlp(self.norm2(levels_weight), H, W))
         #x = x + self.drop_path(self.mlp(self.norm2(x)))
+        # [B, 1024, 256]
+
         # reshape
         x = x.permute(0, 2, 1).view(B, C, H, W)
+         # [B, 256, 32, 32]
         return x
 
     def extra_repr(self):
@@ -149,7 +155,6 @@ class GeneralTransformerBlock(nn.Module):
             self.num_heads, self.window_size, self.mlp_ratio
         )
 
-import torch.nn.functional as F
 class ASPP(nn.Module):
     def __init__(self, in_channel=256, depth=256):
         super(ASPP, self).__init__()
@@ -166,9 +171,10 @@ class ASPP(nn.Module):
         atrous_block1 = self.atrous_block1(x)
         atrous_block6 = self.atrous_block6(x)
         atrous_block12 = self.atrous_block12(x)
-        atrous_block1 = F.upsample(atrous_block1, size=size, mode='bilinear')
-        atrous_block6 = F.upsample(atrous_block6, size=size, mode='bilinear')
-        atrous_block12 = F.upsample(atrous_block12, size=size, mode='bilinear')
+        atrous_block1 = F.interpolate(atrous_block1, size=size, mode='bilinear', align_corners=False)
+        atrous_block6 = F.interpolate(atrous_block6, size=size, mode='bilinear', align_corners=False)
+        atrous_block12 = F.interpolate(atrous_block12, size=size, mode='bilinear', align_corners=False)
+
         #print(atrous_block1.shape)torch.Size([16, 128, 32, 32])
 
         net = self.conv_1x1_output(torch.cat([atrous_block1, atrous_block6,
