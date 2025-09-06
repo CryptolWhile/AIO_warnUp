@@ -32,7 +32,7 @@ class UpCat(nn.Module):
             self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
         self.conv = conv_block(in_ch, out_ch)
 
-    def forward(self, high_feat, low_feat):
+    def forward(self, low_feat, high_feat):
         up_feat = self.up(high_feat)
         # pad cho khớp size
         diffY = low_feat.size()[2] - up_feat.size()[2]
