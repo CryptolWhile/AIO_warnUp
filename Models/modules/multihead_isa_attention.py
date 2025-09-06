@@ -9,7 +9,7 @@ from torch._jit_internal import Optional, Tuple
 #from torch.overrides import has_torch_function, handle_torch_function
 
 from einops import rearrange
-from timm.models.layers import to_2tuple, trunc_normal_
+from timm.layers import to_2tuple, trunc_normal_
 
 from .multihead_attention import MultiheadAttention
 
@@ -388,7 +388,6 @@ class PadBlock(object):
         if pad_h > 0 or pad_w > 0:  # remove the center-padding on feature
             return x[:, pad_h // 2 : pad_h // 2 + h, pad_w // 2 : pad_w // 2 + w, :]
         return x
-
 
 class LocalPermuteModule(object):
     """ "Permute the feature map to gather pixels in local groups, and the reverse permutation"""
